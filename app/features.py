@@ -107,6 +107,10 @@ def url_uses_ip(url):
 def excessive_subdomains(domain):
     if not domain:
         return False
+    # Raw IPv4 hostnames always contain 3 dots; they're covered by the
+    # dedicated IP-URL signal and must not double-count here.
+    if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", domain):
+        return False
     return domain.count(".") >= 3
 
 
@@ -120,7 +124,9 @@ def link_text_href_mismatch(anchors):
         if not text or not href.startswith("http"):
             continue
 
-        text_domain_match = re.search(r'([a-z0-9-]+\.[a-z]{2,})', text)
+        # Capture every label so "www.paypal.com" reduces to paypal.com
+        # instead of stopping at "www.paypal" and never matching the href.
+        text_domain_match = re.search(r'((?:[a-z0-9-]+\.)+[a-z]{2,})', text)
         if not text_domain_match:
             continue
 
@@ -223,7 +229,9 @@ def build_features(parsed_email):
         "suspicious_subdomain_count": suspicious_subdomain_count,
         "link_text_href_mismatch_count": true_mismatch_count,
         "url_shortener_usage": int(has_shortener(all_urls)),
-        "punycode_domain": int(has_punycode(registered_domains)),
+        # Check full hostnames, not registered domains: homograph labels are
+        # often placed in a subdomain (xn--pypal-4ve.evil-host.net).
+        "punycode_domain": int(has_punycode(all_domains)),
         "has_unsubscribe_header": has_unsubscribe_header,
         "has_list_id": has_list_id,
         "has_bulk_precedence": has_bulk_precedence,

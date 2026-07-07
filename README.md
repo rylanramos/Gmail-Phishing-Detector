@@ -54,6 +54,23 @@ Alternatively, run a one-off scan from the command line:
 python app/main.py
 ```
 
+## Testing
+
+Run the test suite from the repository root:
+```
+pytest
+```
+The suite (in [tests/](tests/)) covers the feature-extraction and scoring
+logic in `app/features.py` and `app/scorer.py`: known-phishing patterns
+individually and in combination (domain mismatches, raw-IP and punycode
+URLs, anchor-text/href mismatches, credential-lure language), known-good
+marketing, transactional, and personal mail, and edge cases around the
+safe/suspicious/likely-phishing thresholds — including a phish that adds a
+fraudulent `List-Unsubscribe` header to try to game the bulk-mail discount.
+Fixtures are realistic synthetic emails in
+[tests/fixtures/emails.py](tests/fixtures/emails.py), built through the same
+parser functions the production pipeline uses.
+
 ## Notes
 
 - Gmail access is read-only (`gmail.readonly` scope) — the app never
