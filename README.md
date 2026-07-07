@@ -71,6 +71,16 @@ Fixtures are realistic synthetic emails in
 [tests/fixtures/emails.py](tests/fixtures/emails.py), built through the same
 parser functions the production pipeline uses.
 
+## Known limitations
+
+- The trusted-context discount reduces language-based signals when a
+  message's links point back to the sender's own domain. This means a
+  phishing email sent from attacker-controlled infrastructure, with
+  self-consistent links (sender and landing page on the same
+  attacker-owned domain), may not trigger language-based signals.
+  Structural signals (domain mismatches, punycode, IP URLs, anchor/href
+  mismatches) still apply at full weight regardless.
+
 ## Notes
 
 - Gmail access is read-only (`gmail.readonly` scope) — the app never
