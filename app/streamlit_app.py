@@ -8,6 +8,7 @@ from storage import (
     get_results_by_verdict,
     get_summary_stats,
     get_top_suspicious_domains,
+    get_attachments_for_message,
 )
 
 st.set_page_config(
@@ -33,6 +34,64 @@ def verdict_badge(verdict):
     if verdict == "suspicious":
         return "⚠️ Suspicious"
     return "🚨 Likely phishing"
+
+
+def _virustotal_label(attachment):
+    if not attachment.get("vt_available"):
+        return "unavailable (static analysis only)"
+    status = attachment.get("vt_status")
+    if status == "malicious":
+        return f"🚨 {attachment.get('vt_malicious')} / {attachment.get('vt_total')} engines flagged malicious"
+    if status == "harmless":
+        return f"clean ({attachment.get('vt_total')} engines, 0 malicious)"
+    if status == "unknown":
+        return "unknown hash (neutral, not a clean signal)"
+    return status or "unavailable"
+
+
+def render_attachments(message_id):
+    """Surface persisted attachment-level findings for the selected email."""
+    if not message_id:
+        return
+
+    attachments = get_attachments_for_message(message_id)
+    st.markdown("**Attachments:**")
+    if not attachments:
+        st.write("- none")
+        return
+
+    for att in attachments:
+        triggers = att.get("macro_triggers") or {}
+        flags = []
+        if att.get("extension_mismatch"):
+            flags.append("⚠️ extension/type mismatch")
+        if att.get("has_macros"):
+            flags.append("📎 VBA macro detected")
+        if triggers.get("autoexec"):
+            flags.append("auto-exec: " + ", ".join(triggers["autoexec"]))
+        if triggers.get("shell"):
+            flags.append("shell/exec: " + ", ".join(triggers["shell"]))
+        if triggers.get("obfuscation"):
+            flags.append("obfuscation indicators")
+        if triggers.get("urls") or triggers.get("ips"):
+            flags.append("embedded URLs/IPs in macro")
+        if triggers.get("embedded_objects"):
+            flags.append("embedded OLE objects")
+
+        header = (
+            f"{att.get('filename') or '(unnamed)'} "
+            f"— detected: {att.get('detected_type') or 'unknown'}"
+        )
+        with st.expander(header, expanded=bool(flags)):
+            st.write(f"SHA-256: `{att.get('sha256') or 'n/a'}`")
+            st.write(f"Claimed extension: {att.get('claimed_extension') or '(none)'}")
+            st.write(f"VirusTotal: {_virustotal_label(att)}")
+            if flags:
+                st.markdown("Findings:")
+                for flag in flags:
+                    st.write(f"- {flag}")
+            else:
+                st.write("No attachment-level risk indicators.")
 
 
 def main():
@@ -134,6 +193,8 @@ def main():
                 st.write(f"- {reason}")
         else:
             st.write("- none")
+
+        render_attachments(selected_item.get("gmail_message_id"))
 
         st.markdown("**Extracted features:**")
         st.json(selected_item["raw_features"])

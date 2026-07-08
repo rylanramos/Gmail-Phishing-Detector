@@ -3,6 +3,8 @@ from parser import parse_message
 from features import build_features
 from scorer import score_email
 from storage import init_db, save_result, message_exists
+from attachments import analyze_attachments
+from virustotal import VirusTotalClient
 
 
 def list_recent_messages(service, max_results=10, query=None):
@@ -17,6 +19,11 @@ def list_recent_messages(service, max_results=10, query=None):
 def run_scan(max_results=10, query="newer_than:7d -category:social -category:promotions"):
     init_db()
     service = get_gmail_service()
+
+    # One VirusTotal client for the whole scan. If no API key is configured it
+    # reports itself disabled and every lookup degrades to 'unavailable' - the
+    # scan proceeds on static analysis alone.
+    vt_client = VirusTotalClient()
 
     messages = list_recent_messages(
         service,
@@ -45,8 +52,11 @@ def run_scan(max_results=10, query="newer_than:7d -category:social -category:pro
 
             parsed = parse_message(service, msg["id"])
             features = build_features(parsed)
-            result = score_email(features)
-            save_result(parsed, features, result)
+            attachment_findings = analyze_attachments(
+                parsed.get("attachments", []), vt_client=vt_client
+            )
+            result = score_email(features, attachment_findings)
+            save_result(parsed, features, result, attachment_findings)
 
             analyzed_count += 1
             results.append({
@@ -58,6 +68,15 @@ def run_scan(max_results=10, query="newer_than:7d -category:social -category:pro
                 "score": result["score"],
                 "verdict": result["verdict"],
                 "reasons": result["reasons"],
+                "attachments": [
+                    {
+                        "filename": f["filename"],
+                        "detected_type": f["detected_type"],
+                        "extension_mismatch": f["extension_mismatch"],
+                        "has_macros": f["has_macros"],
+                    }
+                    for f in attachment_findings
+                ],
             })
 
         except Exception as e:

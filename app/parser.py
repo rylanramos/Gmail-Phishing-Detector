@@ -21,6 +21,70 @@ def decode_body(data):
         return ""
 
 
+def decode_attachment_data(data):
+    """Decode Gmail's base64url attachment payload to raw bytes.
+
+    Unlike decode_body, this preserves the raw bytes (attachments are binary,
+    not text) and tolerates missing base64 padding, which the Gmail API omits.
+    """
+    if not data:
+        return b""
+
+    try:
+        padded = data + "=" * (-len(data) % 4)
+        return base64.urlsafe_b64decode(padded.encode("utf-8"))
+    except Exception:
+        return b""
+
+
+def extract_attachments(payload):
+    """Walk the MIME part tree and collect every part that represents an
+    attachment (i.e. carries a non-empty filename).
+
+    Returns a list of dicts describing each attachment. The raw content is not
+    fetched here: small attachments are delivered inline as ``body.data`` while
+    larger ones are referenced by ``body.attachmentId`` and require a separate
+    Gmail API call (see fetch_attachment_content).
+    """
+    attachments = []
+
+    filename = payload.get("filename", "") or ""
+    body = payload.get("body", {}) or {}
+
+    if filename.strip():
+        attachments.append({
+            "filename": filename,
+            "mime_type": payload.get("mimeType", ""),
+            "attachment_id": body.get("attachmentId"),
+            "inline_data": body.get("data"),
+            "size": body.get("size", 0),
+        })
+
+    for part in payload.get("parts", []) or []:
+        attachments.extend(extract_attachments(part))
+
+    return attachments
+
+
+def fetch_attachment_content(service, message_id, attachment):
+    """Resolve the raw bytes for a single extracted attachment.
+
+    Inline attachments carry their data directly; larger ones must be fetched
+    by attachmentId. Returns raw bytes, or b"" if the payload is unavailable.
+    """
+    data = attachment.get("inline_data")
+
+    if not data and attachment.get("attachment_id"):
+        fetched = service.users().messages().attachments().get(
+            userId="me",
+            messageId=message_id,
+            id=attachment["attachment_id"],
+        ).execute()
+        data = fetched.get("data")
+
+    return decode_attachment_data(data)
+
+
 def extract_parts(payload):
     plain_text = ""
     html_text = ""
@@ -86,6 +150,15 @@ def parse_message(service, message_id):
     text_urls = extract_urls_from_text(plain_text)
     html_urls, anchors = extract_urls_from_html(html_text)
 
+    attachments = []
+    for att in extract_attachments(payload):
+        attachments.append({
+            "filename": att["filename"],
+            "mime_type": att["mime_type"],
+            "size": att.get("size", 0),
+            "content": fetch_attachment_content(service, msg.get("id"), att),
+        })
+
     return {
         "message_id": msg.get("id"),
         "thread_id": msg.get("threadId"),
@@ -104,4 +177,5 @@ def parse_message(service, message_id):
         "text_urls": text_urls,
         "html_urls": html_urls,
         "anchors": anchors,
+        "attachments": attachments,
     }

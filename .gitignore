@@ -1,6 +1,7 @@
 # Secrets / OAuth
 token.json
 credentials/credentials.json
+credentials/virustotal_api_key.txt
 .env
 *.env
 

@@ -7,8 +7,11 @@ cffi==2.0.0
 charset-normalizer==3.4.5
 click==8.3.1
 colorama==0.4.6
+colorclass==2.2.2
 cryptography==46.0.5
+easygui==0.98.3
 filelock==3.25.2
+filetype==1.2.0
 GitPython==3.1.46
 google-api-core==2.30.0
 google-api-python-client==2.192.0
@@ -21,10 +24,14 @@ idna==3.11
 Jinja2==3.1.6
 jsonschema==4.26.0
 MarkupSafe==3.0.3
+msoffcrypto-tool==6.0.0
 numpy==2.4.3
 oauthlib==3.3.1
+olefile==0.47
+oletools==0.60.2
 packaging==26.0
 pandas==2.3.3
+pcodedmp==1.2.6
 pillow==12.1.1
 proto-plus==1.27.1
 protobuf==6.33.5
@@ -51,3 +58,4 @@ tzdata==2025.3
 uritemplate==4.2.0
 urllib3==2.6.3
 watchdog==6.0.0
+win-unicode-console==0.5

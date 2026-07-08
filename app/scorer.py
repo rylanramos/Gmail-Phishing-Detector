@@ -1,4 +1,102 @@
-def score_email(features):
+# Attachment signal weights. These are STRUCTURAL signals: like domain
+# mismatches, punycode, and IP-URLs on the email-body side, they are applied at
+# full weight and are never reduced by the bulk-mail trusted-context mechanism
+# or the newsletter deductions (see score_email). A message that looks like a
+# legitimate newsletter but carries a macro-laden, auto-executing attachment is
+# not made safer by looking like a newsletter.
+ATTACH_EXTENSION_MISMATCH = 25
+ATTACH_MACRO_PRESENT = 25
+ATTACH_MACRO_AUTOEXEC = 10
+ATTACH_MACRO_SHELL = 10
+# The auto-exec + shell/process-exec combination is the classic weaponized-macro
+# pattern; weighted high, comparable to the IP-URL / punycode structural signals.
+ATTACH_MACRO_AUTOEXEC_AND_SHELL = 35
+ATTACH_MACRO_OBFUSCATION = 10
+ATTACH_MACRO_EMBEDDED_IOC = 10
+ATTACH_EMBEDDED_OBJECT = 15
+# A VirusTotal hash match with multiple engines flagging the file is corroborated
+# evidence rather than a heuristic inference: the highest-severity single signal
+# in the entire model, enough to reach "likely phishing" on its own.
+ATTACH_VIRUSTOTAL_MALICIOUS = 100
+
+
+def _score_attachments(attachment_findings):
+    """Compute the additive attachment-signal score and its reasons.
+
+    Signals are summed across every attachment on the message so that, e.g., two
+    macro-laden attachments both contribute.
+    """
+    score = 0
+    reasons = []
+
+    for finding in attachment_findings:
+        name = finding.get("filename") or "attachment"
+
+        if finding.get("extension_mismatch"):
+            score += ATTACH_EXTENSION_MISMATCH
+            reasons.append(
+                f"Attachment '{name}' extension does not match its actual file type"
+            )
+
+        if finding.get("has_macros"):
+            score += ATTACH_MACRO_PRESENT
+            reasons.append(f"Attachment '{name}' contains VBA macros")
+
+            has_autoexec = bool(finding.get("macro_autoexec_triggers"))
+            has_shell = bool(finding.get("macro_shell_calls"))
+
+            if has_autoexec:
+                score += ATTACH_MACRO_AUTOEXEC
+            if has_shell:
+                score += ATTACH_MACRO_SHELL
+            if has_autoexec and has_shell:
+                score += ATTACH_MACRO_AUTOEXEC_AND_SHELL
+                reasons.append(
+                    f"Attachment '{name}' macro combines auto-execution triggers "
+                    "with shell/process-execution calls"
+                )
+            elif has_autoexec:
+                reasons.append(
+                    f"Attachment '{name}' macro contains auto-execution triggers"
+                )
+            elif has_shell:
+                reasons.append(
+                    f"Attachment '{name}' macro contains shell/process-execution calls"
+                )
+
+            if finding.get("macro_obfuscation"):
+                score += ATTACH_MACRO_OBFUSCATION
+                reasons.append(
+                    f"Attachment '{name}' macro shows obfuscation indicators"
+                )
+
+            if finding.get("macro_urls") or finding.get("macro_ips"):
+                score += ATTACH_MACRO_EMBEDDED_IOC
+                reasons.append(
+                    f"Attachment '{name}' macro contains embedded URLs or IP addresses"
+                )
+
+        if finding.get("has_embedded_objects"):
+            score += ATTACH_EMBEDDED_OBJECT
+            reasons.append(
+                f"Attachment '{name}' contains embedded OLE objects or files"
+            )
+
+        vt = finding.get("virustotal")
+        if vt and vt.get("available") and vt.get("status") == "malicious":
+            malicious = vt.get("malicious") or 0
+            total = vt.get("total") or 0
+            if malicious > 0:
+                score += ATTACH_VIRUSTOTAL_MALICIOUS
+                reasons.append(
+                    f"Attachment '{name}' flagged by VirusTotal: "
+                    f"{malicious} of {total} engines detected it as malicious"
+                )
+
+    return score, reasons
+
+
+def score_email(features, attachment_findings=None):
     score = 0
     reasons = []
 
@@ -93,7 +191,22 @@ def score_email(features):
         score -= newsletter_score
         reasons.append("Legitimate mailing-list or newsletter indicators detected")
 
-    # Clamp floor
+    # Floor the email-body score at zero BEFORE adding attachment signals. A
+    # heavy newsletter deduction can zero out body signals, but it must never
+    # eat into full-weight attachment signals: a message with a legitimate
+    # newsletter structure but a weaponized attachment is not made safer by
+    # looking like a newsletter. Adding attachment signals after this floor is
+    # what keeps them immune from the bulk-mail discount, mirroring how the
+    # structural email-body signals are treated.
+    if score < 0:
+        score = 0
+
+    if attachment_findings:
+        attach_score, attach_reasons = _score_attachments(attachment_findings)
+        score += attach_score
+        reasons.extend(attach_reasons)
+
+    # Final clamp floor (attachment scores are non-negative, but keep the guard)
     if score < 0:
         score = 0
 
