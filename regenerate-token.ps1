@@ -409,7 +409,7 @@ if (-not $verify.Ok) {
         # Restore itself failed - this is the dangerous corner.
         Stop-Script -Code 7 -Message "Authentication failed AND automatic restore of the old token failed." `
             -State "token.json may be MISSING, but your old token is preserved at '$BackupPath'." `
-            -Recovery "MANUAL RECOVERY REQUIRED: copy '$BackupPath' to '$TokenPath' yourself, e.g.  Copy-Item '$BackupPath' '$TokenPath'  — then investigate. Do NOT delete the backup until token.json is restored."
+            -Recovery "MANUAL RECOVERY REQUIRED: copy '$BackupPath' to '$TokenPath' yourself, e.g.  Copy-Item '$BackupPath' '$TokenPath'  -- then investigate. Do NOT delete the backup until token.json is restored."
     } else {
         Stop-Script -Code 6 -Message "Authentication did not produce a valid new token ($($verify.Reason))." `
             -State "There is no token.json and there was none before this run. Nothing was sent to the container." `
