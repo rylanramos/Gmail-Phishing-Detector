@@ -17,6 +17,28 @@ st.set_page_config(
     layout="wide"
 )
 
+# --- Authentication gate ----------------------------------------------------
+# Must come after st.set_page_config() (Streamlit requires set_page_config to
+# be the first Streamlit command executed) but before anything else in the
+# script, so no dashboard content or data is rendered to an unauthenticated
+# or unauthorized user on any rerun.
+ALLOWED_USERS = {"rylanalexramos@gmail.com"}
+
+if not st.user.is_logged_in:
+    st.title("🛡️ Gmail Phishing Detector")
+    st.write("Please log in with your Google account to continue.")
+    st.button("Log in with Google", on_click=st.login)
+    st.stop()
+
+if st.user.email not in ALLOWED_USERS:
+    st.error("Unauthorized account.")
+    st.stop()
+
+with st.sidebar:
+    st.success(f"Logged in as {st.user.email}")
+    st.button("Log out", on_click=st.logout)
+# -----------------------------------------------------------------------------
+
 
 def load_results(view, limit):
     if view == "All":
