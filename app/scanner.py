@@ -16,7 +16,17 @@ def list_recent_messages(service, max_results=10, query=None):
     return response.get("messages", [])
 
 
-def run_scan(max_results=10, query="newer_than:7d -category:social -category:promotions"):
+def list_recent_spam_messages(service, max_results=10, query=None):
+    """Gmail's messages.list excludes the Spam and Trash folders by default,
+    regardless of query terms - a plain query never sees them. Malicious
+    attachments routinely land straight in Spam, so it must be scanned via an
+    explicit, separate 'in:spam' pass rather than silently going unseen."""
+    spam_query = f"{query} in:spam" if query else "in:spam"
+    return list_recent_messages(service, max_results=max_results, query=spam_query)
+
+
+def run_scan(max_results=10, query="newer_than:7d -category:social -category:promotions",
+             include_spam=True, spam_max_results=10):
     init_db()
     service = get_gmail_service()
 
@@ -30,6 +40,13 @@ def run_scan(max_results=10, query="newer_than:7d -category:social -category:pro
         max_results=max_results,
         query=query
     )
+
+    if include_spam:
+        seen_ids = {m["id"] for m in messages}
+        for spam_msg in list_recent_spam_messages(service, max_results=spam_max_results, query=query):
+            if spam_msg["id"] not in seen_ids:
+                messages.append(spam_msg)
+                seen_ids.add(spam_msg["id"])
 
     if not messages:
         return {
