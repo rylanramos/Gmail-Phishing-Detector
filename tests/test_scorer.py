@@ -12,7 +12,6 @@ def make_features(**overrides):
         "sender_domain": "example.com",
         "reply_to_domain": "",
         "from_replyto_mismatch": 0,
-        "sender_uses_free_mail": 0,
         "contains_urgent_language": 0,
         "credential_lure_language": 0,
         "brand_keyword_presence": 0,
