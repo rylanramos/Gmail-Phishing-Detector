@@ -44,7 +44,9 @@ Streamlit dashboard.
    (tracked in a `schema_version` table) so the database upgrades in place
    instead of needing to be deleted when the schema evolves. Per-attachment
    findings are stored in their own table, queryable per email.
-6. **Dashboard** ([app/streamlit_app.py](app/streamlit_app.py)) — lets you trigger a scan, filter
+6. **Dashboard** ([app/streamlit_app.py](app/streamlit_app.py)) — gated behind Google sign-in
+   (see Setup): only an explicitly allowlisted Google account can view results
+   or trigger a scan. Once signed in, it lets you trigger a scan, filter
    results by verdict, and inspect the extracted features, reasons, and
    attachment-level findings behind each verdict.
 
@@ -79,7 +81,34 @@ Streamlit dashboard.
    results and logs the degradation — it never crashes the scan. The public API
    has a low requests-per-minute ceiling, so lookups use bounded exponential
    backoff on rate-limit (429) responses.
-4. Run the dashboard:
+4. **Dashboard sign-in.** The dashboard is gated behind Google sign-in and
+   will not load without it. This uses a **separate** OAuth client from the
+   one above (a **Web application** client, not Desktop — Streamlit's
+   built-in auth requires a configured redirect URI, which a Desktop-app
+   client doesn't support):
+   - In the [Google Cloud Console](https://console.cloud.google.com/), create
+     an OAuth 2.0 Client ID of type **Web application**, and add
+     `http://<host>:8501/oauth2callback` (matching wherever you'll run the
+     dashboard) to its authorized redirect URIs.
+   - Create `.streamlit/secrets.toml` (gitignored — never commit this file)
+     with:
+     ```toml
+     [auth]
+     redirect_uri = "http://<host>:8501/oauth2callback"
+     cookie_secret = "<a random secret, e.g. `python -c \"import secrets; print(secrets.token_hex(32))\"`>"
+     client_id = "<client_id from the Web application OAuth client above>"
+     client_secret = "<client_secret from the same client>"
+     server_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"
+     ```
+   - Restrict access by editing `ALLOWED_USERS` at the top of
+     [app/streamlit_app.py](app/streamlit_app.py) to the Google account(s)
+     that should be allowed in — any other authenticated account sees
+     "Unauthorized account" and is stopped before any dashboard content
+     renders.
+   - This uses [Authlib](https://docs.authlib.org/) (already in
+     `requirements.txt`) via Streamlit's built-in `st.login()` / `st.user` /
+     `st.logout()`.
+5. Run the dashboard:
    ```
    streamlit run app/streamlit_app.py
    ```
@@ -177,5 +206,8 @@ email-body pipeline and attachment screening:
 
 - Gmail access is read-only (`gmail.readonly` scope) — the app never
   modifies, sends, or deletes mail.
-- `credentials/credentials.json`, `token.json`, and the SQLite database are
-  gitignored; they're local secrets/state and shouldn't be committed.
+- `credentials/credentials.json`, `token.json`, `.streamlit/secrets.toml`,
+  and the SQLite database are gitignored; they're local secrets/state and
+  shouldn't be committed. `secrets.toml` should also be file-permissioned to
+  the account running the dashboard only (e.g. `chmod 600`), since it holds
+  the dashboard OAuth client secret and cookie-signing key.
