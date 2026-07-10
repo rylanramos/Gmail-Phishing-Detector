@@ -125,6 +125,37 @@ Alternatively, run a one-off scan from the command line:
 python app/main.py
 ```
 
+## Token maintenance
+
+This app's Google OAuth consent screen is in **Testing** status (not
+Production), which means Google expires issued refresh tokens after **7
+days** — a deliberate policy for unverified apps, not a bug. When that
+happens, a scan run on a headless machine (e.g. a remote container running
+the scanner on a schedule) fails with
+`google.auth.exceptions.RefreshError: invalid_grant`.
+
+Minting a new refresh token requires a real, interactive browser consent
+flow, which can only happen on a machine with a browser — not the headless
+host. [regenerate-token.ps1](regenerate-token.ps1) automates every step of
+that process except the browser "Allow" click itself:
+
+```
+pwsh -ExecutionPolicy Bypass -File .\regenerate-token.ps1
+```
+
+Run it from a machine with a browser (requires **PowerShell 7+**). It backs
+up the existing `token.json`, deletes it so the interactive consent flow is
+forced, runs `app/main.py` to trigger that flow, verifies a genuinely fresh
+token was written (not just that a file exists), transfers it to the
+configured remote host via `scp` (defaults to
+`root@192.168.2.51:/opt/phishing-detector/token.json`), and verifies the
+remote copy's hash matches before cleaning up the backup. It is designed to
+be paranoid rather than optimistic: at no point does it leave the project
+with neither a valid token nor a backup, and every failure path (cancelled
+consent, timeout, unreachable host, failed transfer, mismatched remote copy,
+etc.) exits with a distinct code and prints the exact current state plus the
+recovery step needed — see the script's own comment header for the full list.
+
 ## Testing
 
 Run the test suite from the repository root:
