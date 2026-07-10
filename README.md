@@ -6,9 +6,14 @@ Streamlit dashboard.
 
 ## How it works
 
-1. **Auth & fetch** ([app/gmail_client.py](app/gmail_client.py), [app/parser.py](app/parser.py)) — authenticates with Gmail via OAuth
+1. **Auth & fetch** ([app/gmail_client.py](app/gmail_client.py), [app/parser.py](app/parser.py), [app/scanner.py](app/scanner.py)) — authenticates with Gmail via OAuth
    (read-only scope) and pulls recent messages, extracting headers, plain
-   text/HTML bodies, and links.
+   text/HTML bodies, and links. Gmail's `messages.list` excludes the Spam and
+   Trash folders by default regardless of query terms, so `run_scan()` runs an
+   explicit second pass with `in:spam` appended and merges the results
+   (deduped) — otherwise a malicious attachment landing straight in Spam,
+   exactly where this kind of thing lands, would be invisible to the scanner
+   entirely. On by default; pass `include_spam=False` to opt out.
 2. **Feature extraction** ([app/features.py](app/features.py)) — derives signals from the parsed
    message: sender/reply-to domain mismatch, raw-IP or punycode URLs, link
    shorteners, anchor-text vs. href mismatches, urgent/credential-lure
