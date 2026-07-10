@@ -132,6 +132,138 @@ def _run_with_message(monkeypatch, message, attachment_store):
     return scanner.run_scan(max_results=1, query="test")
 
 
+class _MultiQueryFakeMessages:
+    """Fake messages() resource that returns different id lists depending on
+    whether the query string contains 'in:spam', mirroring Gmail's real
+    behaviour of excluding Spam/Trash from messages.list unless explicitly
+    asked for. Message bodies for every id must be present in `catalog`."""
+
+    def __init__(self, catalog, inbox_ids, spam_ids):
+        self._catalog = catalog
+        self._inbox_ids = inbox_ids
+        self._spam_ids = spam_ids
+
+    def list(self, userId, maxResults=None, q=None):
+        ids = self._spam_ids if "in:spam" in (q or "") else self._inbox_ids
+        return _Exec({"messages": [{"id": i} for i in ids]})
+
+    def get(self, userId, id, format):
+        return _Exec(self._catalog[id]["message"])
+
+    def attachments(self):
+        catalog = self._catalog
+
+        class _Att:
+            def get(self, userId, messageId, id):
+                return _Exec({"data": _b64url(catalog[messageId]["attachments"][id])})
+
+        return _Att()
+
+
+class MultiQueryFakeGmailService:
+    def __init__(self, catalog, inbox_ids, spam_ids):
+        self._messages = _MultiQueryFakeMessages(catalog, inbox_ids, spam_ids)
+
+    def users(self):
+        return self
+
+    def messages(self):
+        return self._messages
+
+
+def _plain_message(message_id, *, from_="Newsletter <news@example.com>", subject="Hello", body="Hi there"):
+    return {
+        "id": message_id,
+        "threadId": message_id,
+        "snippet": body[:80],
+        "internalDate": "1751724862000",
+        "payload": {
+            "mimeType": "text/plain",
+            "headers": [
+                {"name": "From", "value": from_},
+                {"name": "Subject", "value": subject},
+            ],
+            "body": {"data": _b64url(body.encode())},
+        },
+    }
+
+
+class TestRunScanSpamCoverage:
+    """Gmail's messages.list excludes Spam/Trash by default regardless of
+    query terms, so malicious attachments landing straight in Spam would
+    otherwise never reach the pipeline at all. run_scan must run an explicit
+    'in:spam' pass and merge it in (deduped) unless include_spam=False."""
+
+    def test_spam_messages_are_included_by_default(self, temp_env, monkeypatch):
+        spam_message, spam_store = _message_with_attachment(
+            "invoice.docm", fx.make_docm_with_macro(fx.AUTOOPEN_SHELL_MACRO)
+        )
+        spam_message["id"] = "spam-msg-1"
+        inbox_message = _plain_message("inbox-msg-1")
+
+        catalog = {
+            "inbox-msg-1": {"message": inbox_message, "attachments": {}},
+            "spam-msg-1": {"message": spam_message, "attachments": spam_store},
+        }
+        service = MultiQueryFakeGmailService(
+            catalog, inbox_ids=["inbox-msg-1"], spam_ids=["spam-msg-1"]
+        )
+        monkeypatch.setattr(scanner, "get_gmail_service", lambda: service)
+
+        result = scanner.run_scan(max_results=10, query="test")
+
+        assert result["found"] == 2
+        assert result["analyzed"] == 2
+        processed_ids = {r["subject"] for r in result["results"]}
+        assert processed_ids == {"Hello", "Invoice"}
+
+        stored_ids = {row["gmail_message_id"] for row in storage.get_recent_results()}
+        assert stored_ids == {"inbox-msg-1", "spam-msg-1"}
+
+        # The spam message's malicious macro was actually analyzed, not just listed.
+        spam_row = next(r for r in storage.get_recent_results() if r["gmail_message_id"] == "spam-msg-1")
+        assert spam_row["verdict"] == "likely phishing"
+
+    def test_include_spam_false_skips_the_spam_pass_entirely(self, temp_env, monkeypatch):
+        spam_message, spam_store = _message_with_attachment(
+            "invoice.docm", fx.make_docm_with_macro(fx.AUTOOPEN_SHELL_MACRO)
+        )
+        spam_message["id"] = "spam-msg-1"
+        inbox_message = _plain_message("inbox-msg-1")
+
+        catalog = {
+            "inbox-msg-1": {"message": inbox_message, "attachments": {}},
+            "spam-msg-1": {"message": spam_message, "attachments": spam_store},
+        }
+        service = MultiQueryFakeGmailService(
+            catalog, inbox_ids=["inbox-msg-1"], spam_ids=["spam-msg-1"]
+        )
+        monkeypatch.setattr(scanner, "get_gmail_service", lambda: service)
+
+        result = scanner.run_scan(max_results=10, query="test", include_spam=False)
+
+        assert result["found"] == 1
+        assert result["analyzed"] == 1
+        assert storage.get_recent_results()[0]["gmail_message_id"] == "inbox-msg-1"
+
+    def test_overlap_between_inbox_and_spam_results_is_deduped(self, temp_env, monkeypatch):
+        # Simulates the FakeMessages-style stub used elsewhere in this file,
+        # where the plain and spam-inclusive queries happen to return the same
+        # id: it must be processed exactly once, not twice.
+        message, store = _message_with_attachment("report.docx", fx.make_clean_docx())
+        catalog = {"scan-msg-1": {"message": message, "attachments": store}}
+        service = MultiQueryFakeGmailService(
+            catalog, inbox_ids=["scan-msg-1"], spam_ids=["scan-msg-1"]
+        )
+        monkeypatch.setattr(scanner, "get_gmail_service", lambda: service)
+
+        result = scanner.run_scan(max_results=10, query="test")
+
+        assert result["found"] == 1
+        assert result["analyzed"] == 1
+        assert len(storage.get_recent_results()) == 1
+
+
 class TestRunScanAttachmentPipeline:
     def test_malicious_attachment_yields_and_persists_likely_phishing(self, temp_env, monkeypatch):
         message, store = _message_with_attachment(
