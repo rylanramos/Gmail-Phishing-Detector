@@ -216,7 +216,6 @@ class TestBuildFeatures:
     def test_personal_email(self):
         built = features.build_features(emails.legit_personal_email())
 
-        assert built["sender_uses_free_mail"] == 1
         assert built["url_count"] == 0
         assert built["contains_urgent_language"] == 0
         assert built["credential_lure_language"] == 0

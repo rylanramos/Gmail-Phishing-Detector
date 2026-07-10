@@ -46,13 +46,6 @@ NEWSLETTER_HINTS = [
     "monthly update",
 ]
 
-FREE_MAIL_DOMAINS = {
-    "gmail.com",
-    "yahoo.com",
-    "hotmail.com",
-    "outlook.com",
-}
-
 SHORTENERS = {
     "bit.ly",
     "tinyurl.com",
@@ -220,7 +213,6 @@ def build_features(parsed_email):
         "from_replyto_mismatch": int(
             bool(sender_domain and reply_to_domain and get_registered_domain(sender_domain) != get_registered_domain(reply_to_domain))
         ),
-        "sender_uses_free_mail": int(get_registered_domain(sender_domain) in FREE_MAIL_DOMAINS),
         "contains_urgent_language": urgent_language,
         "credential_lure_language": credential_lure,
         "brand_keyword_presence": int(contains_brand_keywords(content)),
