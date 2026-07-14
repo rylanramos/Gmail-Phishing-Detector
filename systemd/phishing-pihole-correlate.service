@@ -1,0 +1,12 @@
+[Unit]
+Description=Gmail Phishing Detector - Pi-hole DNS correlation check
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/phishing-detector
+ExecStart=/opt/phishing-detector/venv/bin/python app/correlate_main.py
+StandardOutput=journal
+StandardError=journal

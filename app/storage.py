@@ -107,6 +107,62 @@ def _migration_002_attachment_findings(conn):
     """)
 
 
+def _migration_003_pihole_correlations(conn):
+    """Persist Pi-hole DNS-query correlation hits: a domain the phishing
+    detector flagged (from a suspicious/likely-phishing email's sender or
+    body links) that also appears in Pi-hole's DNS query log, meaning a
+    device actually queried a domain that arrived via a phishing email.
+
+    Idempotent: CREATE TABLE / INDEX IF NOT EXISTS plus column-presence
+    checks, consistent with the earlier migrations. A UNIQUE constraint on
+    (domain, gmail_message_id, pihole_query_id) makes repeat correlation runs
+    idempotent (INSERT OR IGNORE) while still allowing the same underlying
+    DNS query to be recorded once per distinct source email, preserving full
+    provenance when multiple flagged emails reference the same domain."""
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pihole_correlations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            domain TEXT
+        )
+    """)
+
+    existing_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(pihole_correlations)").fetchall()
+    }
+
+    required_columns = {
+        "domain_source": "TEXT",       # 'sender' | 'link'
+        "gmail_message_id": "TEXT",
+        "email_verdict": "TEXT",
+        "email_score": "INTEGER",
+        "email_subject": "TEXT",
+        "pihole_query_id": "INTEGER",
+        "pihole_query_time": "REAL",   # Pi-hole's unix timestamp for the query
+        "pihole_client_ip": "TEXT",
+        "pihole_client_name": "TEXT",
+        "pihole_query_status": "TEXT",
+        "detected_at": "TEXT",
+    }
+
+    for column, col_type in required_columns.items():
+        if column not in existing_columns:
+            conn.execute(
+                f"ALTER TABLE pihole_correlations ADD COLUMN {column} {col_type}"
+            )
+
+    conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_pihole_correlations_dedup
+        ON pihole_correlations (domain, gmail_message_id, pihole_query_id)
+    """)
+
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_pihole_correlations_domain
+        ON pihole_correlations (domain)
+    """)
+
+
 # Ordered, numbered migrations. Each migration is applied at most once per
 # database, tracked via the schema_version table below. To evolve the schema
 # in the future (rename/drop a column, add an index, backfill data, etc.),
@@ -116,6 +172,7 @@ def _migration_002_attachment_findings(conn):
 MIGRATIONS = [
     _migration_001_baseline,
     _migration_002_attachment_findings,
+    _migration_003_pihole_correlations,
 ]
 
 
@@ -368,6 +425,81 @@ def get_top_suspicious_domains(limit=10):
             FROM domain_history
             WHERE suspicious_count > 0
             ORDER BY suspicious_count DESC, last_seen DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+def get_flagged_emails_since(cutoff_iso):
+    """Return suspicious/likely-phishing emails analyzed at or after
+    `cutoff_iso` (an ISO-8601 string, comparable lexicographically with the
+    analyzed_at column since both use datetime.isoformat()), with raw_features
+    decoded. Used by the Pi-hole correlation script to find candidate domains."""
+    with get_connection() as conn:
+        rows = conn.execute("""
+            SELECT gmail_message_id, subject, sender_domain, verdict, score, raw_features
+            FROM email_analysis
+            WHERE verdict IN ('suspicious', 'likely phishing')
+              AND analyzed_at >= ?
+            ORDER BY analyzed_at DESC
+        """, (cutoff_iso,)).fetchall()
+
+    results = []
+    for row in rows:
+        item = dict(row)
+        item["raw_features"] = json.loads(item["raw_features"]) if item["raw_features"] else {}
+        results.append(item)
+
+    return results
+
+
+def save_pihole_correlation(hit):
+    """Persist one Pi-hole correlation hit. Idempotent: a repeat run that
+    finds the same (domain, gmail_message_id, pihole_query_id) combination is
+    silently ignored rather than duplicated."""
+    now = datetime.utcnow().isoformat()
+
+    with get_connection() as conn:
+        conn.execute("""
+            INSERT OR IGNORE INTO pihole_correlations (
+                domain,
+                domain_source,
+                gmail_message_id,
+                email_verdict,
+                email_score,
+                email_subject,
+                pihole_query_id,
+                pihole_query_time,
+                pihole_client_ip,
+                pihole_client_name,
+                pihole_query_status,
+                detected_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            hit["domain"],
+            hit["domain_source"],
+            hit["gmail_message_id"],
+            hit["email_verdict"],
+            hit["email_score"],
+            hit["email_subject"],
+            hit["pihole_query_id"],
+            hit["pihole_query_time"],
+            hit["pihole_client_ip"],
+            hit["pihole_client_name"],
+            hit["pihole_query_status"],
+            now,
+        ))
+        conn.commit()
+        return conn.total_changes
+
+
+def get_recent_pihole_correlations(limit=100):
+    with get_connection() as conn:
+        rows = conn.execute("""
+            SELECT *
+            FROM pihole_correlations
+            ORDER BY detected_at DESC
             LIMIT ?
         """, (limit,)).fetchall()
 

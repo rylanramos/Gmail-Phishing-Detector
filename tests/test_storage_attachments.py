@@ -58,10 +58,15 @@ def _finding(**overrides):
 
 
 class TestMigration:
-    def test_schema_version_advances_to_two(self, temp_db):
+    def test_schema_version_advances_past_attachment_migration(self, temp_db):
+        # Tied to len(MIGRATIONS) rather than a hardcoded number, so this
+        # doesn't need editing every time an unrelated migration is added
+        # elsewhere (e.g. Pi-hole correlation, migration 003). What matters
+        # here is that migration 002 (attachment_findings) is included.
         with storage.get_connection() as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 2
+        assert version == len(storage.MIGRATIONS)
+        assert version >= 2
 
     def test_attachment_table_exists(self, temp_db):
         with storage.get_connection() as conn:
@@ -76,7 +81,7 @@ class TestMigration:
         storage.init_db()
         with storage.get_connection() as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 2
+        assert version == len(storage.MIGRATIONS)
 
 
 class TestPersistence:
