@@ -54,6 +54,13 @@ Streamlit dashboard.
    or trigger a scan. Once signed in, it lets you trigger a scan, filter
    results by verdict, and inspect the extracted features, reasons, and
    attachment-level findings behind each verdict.
+7. **Pi-hole correlation** ([app/correlate.py](app/correlate.py), [app/pihole_client.py](app/pihole_client.py)) — a separate,
+   independently scheduled check (see Pi-hole correlation below) that asks
+   whether any domain flagged by a suspicious/likely-phishing email (its
+   sender address, or a link found in its body) was also actually queried by
+   a device on the network, per Pi-hole's DNS log. That combination — a
+   domain arrived via a phishing email *and* something on the network tried
+   to resolve it — is a materially stronger signal than either tool alone.
 
 ## Setup
 
@@ -156,14 +163,57 @@ consent, timeout, unreachable host, failed transfer, mismatched remote copy,
 etc.) exits with a distinct code and prints the exact current state plus the
 recovery step needed — see the script's own comment header for the full list.
 
+## Pi-hole correlation
+
+If a Pi-hole instance is on the same network, an independent, separately
+scheduled check ([app/correlate.py](app/correlate.py)) can cross-reference domains this app has
+flagged against Pi-hole's DNS query log. This is optional — the rest of the
+app works fully without it — and disabled by default until configured.
+
+**Setup:**
+
+1. In Pi-hole's web UI, generate a dedicated **Application Password**
+   (Settings → API → App Password), rather than reusing your regular login
+   password — it doesn't require 2FA and can be safely placed in an
+   unattended script's credentials file, matching how the VirusTotal API key
+   is handled:
+   - set the `PIHOLE_API_PASSWORD` environment variable, **or**
+   - save it to `credentials/pihole_api_password.txt` (gitignored).
+2. By default the client targets `http://192.168.2.52`; override with the
+   `PIHOLE_BASE_URL` environment variable if your instance is elsewhere.
+3. Run it directly:
+   ```
+   python app/correlate_main.py
+   ```
+   or install the scheduled version — see [systemd/](systemd/) for the unit
+   files (`phishing-pihole-correlate.service` + `.timer`, runs hourly),
+   following the same pattern as the existing scanner and dashboard units
+   (not tracked in this repo prior to this feature — see `systemd/README.md`).
+
+**How matching works:** for every suspicious/likely-phishing email analyzed
+in the last 7 days (configurable), every domain associated with it — the
+sender's address domain, and every link URL found in the email body, both
+reduced to their *registered* domain via the same helpers `app/features.py`
+already uses for scoring — is checked against Pi-hole's query log for the
+last 24 hours (configurable) via its wildcard domain filter. Matches are
+re-verified client-side against the exact registered domain (Pi-hole's
+wildcard is a plain substring match, so e.g. a `paypal.com` filter alone
+could otherwise let `evil-paypal.com` through) and persisted to a
+`pihole_correlations` table, deduplicated per (domain, source email, Pi-hole
+query) so repeat runs never create duplicate rows.
+
+A missing password, an unreachable Pi-hole, or any API error degrades this
+check to a no-op with a logged reason — it never crashes or blocks the
+scanner or dashboard, which have no dependency on it.
+
 ## Testing
 
 Run the test suite from the repository root:
 ```
 pytest
 ```
-The suite (in [tests/](tests/)) has **204 tests** and covers both the
-email-body pipeline and attachment screening:
+The suite (in [tests/](tests/)) has **260 tests** and covers the email-body
+pipeline, attachment screening, and Pi-hole correlation:
 
 - **Feature extraction and scoring** (`app/features.py`, `app/scorer.py`):
   known-phishing patterns individually and in combination (domain mismatches,
@@ -192,6 +242,20 @@ email-body pipeline and attachment screening:
   document through the real pipeline and pins the score at `80`
   (`likely phishing`), locking in the scoring order that prevents the bulk-mail
   discount from suppressing a malicious attachment.
+- **Pi-hole correlation** (`app/pihole_client.py`, `app/correlate.py`,
+  `app/storage.py`): request/response shapes are pinned to what was confirmed
+  against a live Pi-hole instance's own self-hosted OpenAPI docs, not assumed
+  — auth (`POST /api/auth`), session re-authentication on an expired SID,
+  rate-limit backoff, and graceful degradation (missing password, network
+  error, malformed response) are all mocked at the HTTP layer, no network
+  requests are made. Domain-extraction and matching tests use email fixtures
+  modeled on real production data (a bulk-marketing email whose tracking
+  links reduce to a different registered domain than the sender — the
+  project's own documented false-positive pattern) and Pi-hole query
+  fixtures shaped exactly like the real API response, including a regression
+  test confirming Pi-hole's substring-based wildcard filter can't let a
+  same-suffix decoy domain (`evil-paypal.com` matching a `paypal.com` check)
+  through as a false match.
 
 ## Known limitations
 
@@ -238,12 +302,41 @@ email-body pipeline and attachment screening:
   flag same-family relabeling (e.g. an `.xlsx` renamed to `.docx`), and it does
   not fire when the true type cannot be determined from magic bytes.
 
+### Pi-hole correlation
+
+- **A DNS query is not proof a user clicked a link.** Resolving a domain can
+  happen without any human action — link-preview generation, prefetching,
+  ad/tracker infrastructure sharing a domain, or a background process. A
+  correlation hit means a device on the network *asked to resolve* a flagged
+  domain, which is meaningfully stronger evidence than the email alone, but
+  it is not the same as confirming a user visited a page or entered
+  credentials.
+- **Registered-domain matching, not exact-hostname matching.** A query for
+  any subdomain of a flagged registered domain counts as a match (e.g. a
+  flagged `exct.net` matches a query for `cl.s12.exct.net`). This is
+  deliberate — it's the same reduction the scorer itself uses — but it means
+  a large, multi-tenant domain flagged once (e.g. a shared marketing ESP)
+  could produce matches unrelated to the specific flagged message.
+- **Depends on Pi-hole retaining and returning matching history.** If
+  Pi-hole's query retention is shorter than the correlation lookback window,
+  or the on-disk long-term database (`disk=true`) isn't queried, older
+  matching queries won't be found. Only queries within the configured
+  lookback (default: last 24 hours) are checked against domains flagged
+  within the email lookback window (default: last 7 days).
+- **A missing or invalid Pi-hole credential silently disables this feature.**
+  By design (see Setup) — the scanner and dashboard have no dependency on
+  it — but it means an expired Pi-hole app password degrades to "no
+  correlations found" rather than a visible error, unless the systemd
+  journal for `phishing-pihole-correlate.service` is checked.
+
 ## Notes
 
 - Gmail access is read-only (`gmail.readonly` scope) — the app never
-  modifies, sends, or deletes mail.
+  modifies, sends, or deletes mail. Pi-hole access is also read-only (only
+  `GET /api/queries` is used; nothing is blocked, allowed, or reconfigured).
 - `credentials/credentials.json`, `token.json`, `.streamlit/secrets.toml`,
-  and the SQLite database are gitignored; they're local secrets/state and
-  shouldn't be committed. `secrets.toml` should also be file-permissioned to
-  the account running the dashboard only (e.g. `chmod 600`), since it holds
-  the dashboard OAuth client secret and cookie-signing key.
+  `credentials/pihole_api_password.txt`, and the SQLite database are
+  gitignored; they're local secrets/state and shouldn't be committed.
+  `secrets.toml` should also be file-permissioned to the account running the
+  dashboard only (e.g. `chmod 600`), since it holds the dashboard OAuth
+  client secret and cookie-signing key.
