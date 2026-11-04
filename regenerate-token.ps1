@@ -58,7 +58,7 @@
         pwsh -ExecutionPolicy Bypass -File .\regenerate-token.ps1
 
 .PARAMETER RemoteHost
-    SSH destination (default root@192.168.2.51).
+    SSH destination (default root@192.168.1.51).
 
 .PARAMETER AuthTimeoutSeconds
     Max seconds to wait for you to complete the browser consent AND for the
@@ -74,7 +74,7 @@ param(
     [string]  $CredentialsFile,
     [string]  $TokenPath,
     [string]  $BackupPath,
-    [string]  $RemoteHost            = 'root@192.168.2.51',
+    [string]  $RemoteHost            = 'root@192.168.1.51',
     [string]  $RemotePath            = '/opt/phishing-detector/token.json',
     # Program may be a bare exe name or an array of exe + fixed leading args
     # (the array form exists so the test harness can substitute a mock).
@@ -218,7 +218,12 @@ function Invoke-Bounded {
 function Split-Program {
     param([string[]]$Spec)
     if (-not $Spec -or $Spec.Count -eq 0) { throw 'empty program spec' }
-    return [pscustomobject]@{ Exe = $Spec[0]; Prefix = @($Spec[1..($Spec.Count - 1)]) }
+    # Only slice when there ARE leading args. With a single-element spec,
+    # 1..($Spec.Count - 1) is 1..0, which PowerShell enumerates DOWNWARD as
+    # (1, 0); $Spec[1] is then out of bounds and Set-StrictMode makes that fatal.
+    $prefix = @()
+    if ($Spec.Count -gt 1) { $prefix = @($Spec[1..($Spec.Count - 1)]) }
+    return [pscustomobject]@{ Exe = $Spec[0]; Prefix = $prefix }
 }
 
 # Restore token.json from the backup. Returns $true on success. Never deletes

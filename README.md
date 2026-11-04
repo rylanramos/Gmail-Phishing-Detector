@@ -155,7 +155,7 @@ up the existing `token.json`, deletes it so the interactive consent flow is
 forced, runs `app/main.py` to trigger that flow, verifies a genuinely fresh
 token was written (not just that a file exists), transfers it to the
 configured remote host via `scp` (defaults to
-`root@192.168.2.51:/opt/phishing-detector/token.json`), and verifies the
+`root@192.168.1.51:/opt/phishing-detector/token.json`), and verifies the
 remote copy's hash matches before cleaning up the backup. It is designed to
 be paranoid rather than optimistic: at no point does it leave the project
 with neither a valid token nor a backup, and every failure path (cancelled
